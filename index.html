@@ -56,8 +56,7 @@ input[type=text]{height:48px;width:100%;border-radius:14px;border:1px solid var(
 .banner span{display:inline-block;margin-top:8px;padding:6px 16px;border-radius:999px;background:rgba(0,0,0,.7);font-weight:900;font-size:18px}
 .side{border-left:1px solid var(--line);background:var(--panel);overflow:auto;padding:20px;display:flex;flex-direction:column;gap:14px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px;display:flex;flex-direction:column;gap:10px}
-.codebox{display:flex;align-items:center;justify-content:space-between;gap:10px}
-.codebox b{font:400 34px/1 "Black Han Sans",sans-serif;letter-spacing:.12em}
+.codebox{display:flex;align-items:center;justify-content:space-between;gap:10px}.codebox h2{margin:0}
 .btns{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .sw{display:flex;align-items:center;gap:12px;cursor:pointer;font-weight:700;min-height:44px}
 .sw input{position:absolute;opacity:0}
@@ -128,26 +127,24 @@ input[type=text]{height:48px;width:100%;border-radius:14px;border:1px solid var(
     <div class="banner" id="banner"><b id="bannerT"></b><span id="bannerS"></span></div>
   </div>
   <aside class="side">
-    <div class="card" id="roomCard">
-      <div class="codebox"><div><p class="mute">방 코드</p><b id="codeTxt">----</b></div><button class="ghost" id="copyBtn">링크 복사</button></div>
-      <p class="note link" id="linkTxt"></p>
-      <p class="note">이 링크를 보내면 친구들이 같은 방으로 들어와요.</p>
+    <div class="card" id="waitCard"><p class="mute" id="waitTxt">방장이 게임을 시작하면 출발해요.</p></div>
+    <div class="card" id="ctlCard">
+      <p class="mute" id="roleTxt"></p>
+      <div class="btns"><button class="btn blue" id="shuffleBtn">섞기</button><button class="btn" id="startBtn">게임 시작</button></div>
+      <p class="warn" id="pendTxt" hidden></p>
+      <form class="row" id="addForm"><input type="text" id="addName" maxlength="12" placeholder="휴대폰 없는 사람 추가" aria-label="휴대폰 없는 사람 이름"><button class="btn small teal">추가</button></form>
     </div>
     <div class="card">
       <label class="mute" for="myName">내 이름</label>
       <div class="row"><input type="text" id="myName" maxlength="12"><button class="btn small purple" id="saveName">바꾸기</button></div>
     </div>
-    <div class="card" id="waitCard"><p class="mute" id="waitTxt">방장이 게임을 시작하면 출발해요.</p></div>
-    <div class="card" id="ctlCard">
-      <p class="mute" id="roleTxt"></p>
-      <label class="sw"><input type="checkbox" id="skillCk"><i></i><span>스킬 활성화</span></label>
-      <p class="note">켜면 일정 시간마다 공이 주변 공을 밀쳐내요. 공 둘레의 빨간 원이 다 사라지면 스킬을 쓸 수 있어요.</p>
-      <div class="btns"><button class="btn blue" id="shuffleBtn">섞기</button><button class="btn" id="startBtn">Start</button></div>
-      <p class="warn" id="pendTxt" hidden></p>
-      <form class="row" id="addForm"><input type="text" id="addName" maxlength="12" placeholder="휴대폰 없는 사람 추가"><button class="btn small teal">추가</button></form>
+    <div class="card" id="roomCard">
+      <div class="codebox"><h2>방 링크</h2><button class="ghost" id="copyBtn">링크 복사</button></div>
+      <p class="note link" id="linkTxt"></p>
+      <p class="note">이 링크를 보내면 친구들이 같은 방으로 들어와요.</p>
     </div>
     <div class="card">
-      <h2>참가자 <span class="mute" id="countTxt"></span></h2>
+      <h2>참가자 · 순위 <span class="mute" id="countTxt"></span></h2>
       <ol class="list" id="list"></ol>
     </div>
     <button class="ghost" id="leaveBtn">방 나가기</button>
@@ -433,7 +430,7 @@ function hostLeft() {
 }
 function showGame() {
   $('#lobby').hidden = true; $('#app').hidden = false;
-  $('#codeTxt').textContent = code; $('#linkTxt').textContent = roomLink(code);
+  $('#linkTxt').textContent = roomLink(code);
   $('#myName').value = myName;
   renderPanel(); resize();
 }
@@ -454,7 +451,6 @@ function renderPanel() {
   $('#ctlCard').hidden = !isHost; $('#waitCard').hidden = isHost;
   if (!isHost && hostOn) $('#waitTxt').textContent = ph === 'run' ? '게임이 진행 중이에요. 내 공을 응원해 주세요!' : ph === 'end' ? '끝났어요. 방장이 다시 시작할 수 있어요.' : pend ? '다른 사람이 이름을 입력하는 중이에요. 모두 입력하면 방장이 시작해요.' : '방장이 게임을 시작하면 출발해요.';
   $('#roleTxt').textContent = '내가 방장이에요. 들어온 사람이 모두 이름을 정하면 시작할 수 있어요.';
-  $('#skillCk').checked = RS.skill; $('#skillCk').disabled = !isHost || ph === 'run';
   $('#shuffleBtn').disabled = !isHost || ph === 'run' || ph === 'shuffle' || !RS.balls.length;
   $('#startBtn').disabled = !isHost || !RS.balls.length || (ph !== 'run' && pend > 0);
   $('#startBtn').textContent = ph === 'run' ? 'Stop' : ph === 'end' ? '게임 다시 시작' : '게임 시작';
@@ -494,7 +490,6 @@ function showBanner(t, s) {
   const b = $('#banner'); b.classList.add('show'); clearTimeout(showBanner.h); showBanner.h = setTimeout(() => b.classList.remove('show'), t === '출발!' ? 1100 : 3200);
 }
 
-$('#skillCk').addEventListener('change', e => { if (!isHost) return; skill = e.target.checked; sendRoster(); });
 $('#shuffleBtn').addEventListener('click', () => {
   if (!isHost || phase === 'run') return;
   rank = [];
