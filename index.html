@@ -156,7 +156,7 @@ input[type=text]{height:48px;width:100%;border-radius:14px;border:1px solid var(
 <script>
 {
 const $ = s => document.querySelector(s);
-const W = 360, H = 2260, GOAL = 2200, R = 11, G = 900, MAX = 40;
+const W = 360, H = 2410, GOAL = 2350, R = 11, G = 600, MAX = 40;
 const PAL = [['#ff4a4a','#ffc2b8','#8c0712'],['#2f6bff','#b9d0ff','#0b237a'],['#ffc21f','#fff1a8','#a86200'],['#a64dff','#e3c2ff','#4b0f8a'],['#16d1bd','#b4fff3','#06695f'],['#ff7a1a','#ffd0a8','#933a00'],['#ff4fa8','#ffc6e4','#8a0b4b'],['#5ad13a','#d2ffc0','#20660e']];
 
 // ---------- 입체 공 그림 (한 번 그려 두고 재사용) ----------
@@ -180,16 +180,25 @@ const SPR = PAL.map(sprite), PEG = sprite(['#c9cbd6', '#ffffff', '#4a4c5a']);
 // ---------- 판 ----------
 const segs = [], pegs = [], spins = [];
 const S = (a, b, c, d) => segs.push([a, b, c, d]);
-S(8, 0, 352, 0); S(8, 0, 8, 2020); S(352, 0, 352, 2020);
-S(8, 2020, 152, 2180); S(352, 2020, 208, 2180); S(152, 2180, 152, H); S(208, 2180, 208, H);
+S(8, 0, 352, 0); S(8, 0, 8, 2170); S(352, 0, 352, 2170);
+// 골 입구는 공 하나(지름 22)만 겨우 지나는 폭 34 — 공들이 입구 앞에 몰린다
+S(8, 2170, 163, 2330); S(352, 2170, 197, 2330); S(163, 2330, 163, H); S(197, 2330, 197, H);
 // 지그재그 경사로 — 공이 좌우로 굴러 내려가며 속도를 잃는다
-S(8, 1730, 250, 1790); S(352, 1840, 110, 1900);
+S(8, 1730, 250, 1790); S(352, 1840, 110, 1900); S(8, 1950, 250, 2010);
 S(8, 930, 92, 985); S(352, 930, 268, 985);
 for (let r = 0, y = 230; y <= 710; r++, y += 48) for (let x = r % 2 ? 52 : 30; x <= 332; x += 44) pegs.push([x, y, 5, .55, 0]);
 [[95, 1070], [180, 1130], [265, 1070], [137, 1240], [223, 1240]].forEach((p, i) => pegs.push([p[0], p[1], 18, .9, 240, 0, i]));
 for (let r = 0, y = 1470; y <= 1680; r++, y += 44) for (let x = r % 2 ? 50 : 28; x <= 332; x += 44) pegs.push([x, y, 5, .55, 0]);
-spins.push({ cx: 100, cy: 830, l: 50, w: 3.2 }, { cx: 260, cy: 830, l: 50, w: -3.2 }, { cx: 180, cy: 1380, l: 80, w: 2.4 }, { cx: 180, cy: 2090, l: 55, w: -2.2 });
-const spinAt = (s, t) => { const a = s.w * t, c = Math.cos(a) * s.l, n = Math.sin(a) * s.l; return [s.cx - c, s.cy - n, s.cx + c, s.cy + n, s]; };
+spins.push({ cx: 100, cy: 830, l: 50, w: 3.2 }, { cx: 260, cy: 830, l: 50, w: -3.2 }, { cx: 180, cy: 1380, l: 80, w: 2.4 }, { cx: 180, cy: 2140, l: 72, w: -2.2 },
+  // 골 입구 바로 위 — 입구를 쓸고 지나가며 공을 위로 튕기거나 붙잡는다. 막대 끝이 벽에 닿을 만큼 길어 공이 끼기도 한다
+  { cx: 180, cy: 2270, l: 44, w: 3.0, rev: 3.4 });
+// rev 가 있는 막대는 rev 초마다 도는 방향을 바꾼다 (한쪽으로만 돌면 반대편 공이 영영 밀려 올라간다)
+const spinAt = (s, t) => {
+  let a = s.w * t, w = s.w;
+  if (s.rev) { const ph = t % (2 * s.rev); a = s.w * (ph < s.rev ? ph : 2 * s.rev - ph); w = ph < s.rev ? s.w : -s.w; }
+  const c = Math.cos(a) * s.l, n = Math.sin(a) * s.l;
+  return [s.cx - c, s.cy - n, s.cx + c, s.cy + n, { cx: s.cx, cy: s.cy, w }];
+};
 
 // ---------- 물리 (방장 기기에서만 돈다) ----------
 let balls = [], phase = 'idle', skill = false, rank = [], simT = 0, shuffleT = 0, newWaves = [];
@@ -238,6 +247,7 @@ function step(dt) {
     for (const s of segs) hitSeg(b, s[0], s[1], s[2], s[3], 2, .45, null);
     if (!run) hitSeg(b, 8, 150, 352, 150, 2, .3, null);
     for (const s of sp) hitSeg(b, s[0], s[1], s[2], s[3], 6, .5, s[4]);
+    for (const s of segs) hitSeg(b, s[0], s[1], s[2], s[3], 2, .45, null);   // 막대가 벽 쪽으로 밀어도 판 밖으로 나가지 않게 벽을 마지막에 한 번 더
     for (const p of pegs) hitCircle(b, p);
     if (!run) continue;
     if (v < 25) { b.idle += dt; if (b.idle > 1.2) { b.vx += (Math.random() - .5) * 500; b.vy -= 250; b.idle = 0; } } else b.idle = 0;
@@ -573,14 +583,14 @@ function draw(v, now, dt) {
   ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, -dpr * scale * cam);
   // 판 바탕
   const bg = ctx.createLinearGradient(0, 0, W, 0); bg.addColorStop(0, 'rgba(60,70,140,.10)'); bg.addColorStop(.5, 'rgba(20,20,40,.0)'); bg.addColorStop(1, 'rgba(60,70,140,.10)');
-  ctx.fillStyle = bg; ctx.fillRect(8, 0, 344, 2020);
+  ctx.fillStyle = bg; ctx.fillRect(8, 0, 344, 2170);
   // 유리 벽
   ctx.lineCap = 'round';
   for (const [w, c] of [[10, 'rgba(160,200,255,.12)'], [3, 'rgba(255,255,255,.92)']]) { ctx.lineWidth = w; ctx.strokeStyle = c; ctx.beginPath(); for (const s of segs) { ctx.moveTo(s[0], s[1]); ctx.lineTo(s[2], s[3]); } ctx.stroke(); }
-  ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.16)'; ctx.beginPath(); ctx.moveTo(18, 12); ctx.lineTo(18, 2000); ctx.moveTo(342, 12); ctx.lineTo(342, 2000); ctx.stroke();
+  ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.16)'; ctx.beginPath(); ctx.moveTo(18, 12); ctx.lineTo(18, 2150); ctx.moveTo(342, 12); ctx.lineTo(342, 2150); ctx.stroke();
   if (ph !== 'run') { ctx.setLineDash([8, 7]); ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.beginPath(); ctx.moveTo(8, 150); ctx.lineTo(352, 150); ctx.stroke(); ctx.setLineDash([]); }
   // 골
-  for (let i = 0; i < 7; i++) for (let j = 0; j < 2; j++) { ctx.fillStyle = (i + j) % 2 ? '#fff' : '#111'; ctx.fillRect(152 + i * 8, GOAL + j * 8, 8, 8); }
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 2; j++) { ctx.fillStyle = (i + j) % 2 ? '#fff' : '#111'; ctx.fillRect(163 + i * 8.5, GOAL + j * 8.5, 8.5, 8.5); }
   ctx.fillStyle = '#ffc21f'; ctx.font = '400 22px "Black Han Sans",sans-serif'; ctx.textAlign = 'center'; ctx.fillText('GOAL', 180, GOAL + 44);
   // 핀 · 범퍼
   for (const p of pegs) {
