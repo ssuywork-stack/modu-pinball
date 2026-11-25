@@ -155,7 +155,7 @@ input[type=text]{height:48px;width:100%;border-radius:14px;border:1px solid var(
 </div>
 <div class="toast" id="toast" role="status"></div>
 
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <script>
 {
 const $ = s => document.querySelector(s);
@@ -268,21 +268,40 @@ function placeAll() {
   });
 }
 
-// ---------- 방 / 연결 — 방장 기기가 방이 되고, 들어온 사람은 방장 기기에 바로 붙는다 (PeerJS) ----------
-const PREFIX = 'modu-pinball-v1-';
-let peer = null, conn = null, isHost = false, hostOn = false, code = '', myName = '', myPeer = null;
-const conns = new Map();   // 방장만 쓴다: 상대 id → { conn, name }
+// ---------- 방 / 연결 — 공개 중계 서버(MQTT)를 거쳐 주고받는다 ----------
+// 기기끼리 바로 잇는 방식(WebRTC)은 서로 다른 네트워크(LTE ↔ 와이파이 등)에서 자주 막혀서,
+// 모든 메시지를 중계 서버로 보낸다. 방장 기기가 게임을 계산하고 결과를 뿌린다.
+const BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
+const TOPIC = 'modu-pinball/v1/';
+let mq = null, broker = 0, isHost = false, hostOn = false, code = '', myName = '', myPeer = null, hosting = false;
+const conns = new Map();   // 방장만 쓴다: 참가자 id → { name, seen }
 let extras = [], extraSeq = 0, nextId = 0, view = { t: 0, b: [] }, fA = null, fB = null;
 const keyId = new Map();
 let RS = { phase: 'idle', skill: false, rank: [], balls: [], pending: 0 };   // 화면이 그리는 명단
 const clean = s => typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁯﻿]/g, '').trim().slice(0, 12) : '';
 const toast = (t) => { const el = $('#toast'); el.textContent = t; el.classList.add('show'); clearTimeout(toast.h); toast.h = setTimeout(() => el.classList.remove('show'), 2600); };
 const baseUrl = () => location.href.split(/[?#]/)[0];
-const roomLink = c => baseUrl() + '?room=' + c;
-const inviteCode = (new URLSearchParams(location.search).get('room') || '').toUpperCase();
+const roomLink = c => baseUrl() + '?room=' + c + (broker ? '&b=' + broker : '');
+const qs = new URLSearchParams(location.search);
+const inviteCode = (qs.get('room') || '').toUpperCase();
 const isInvite = /^[A-Z]{4}$/.test(inviteCode);
+const rid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 const pendingN = () => { let n = 0; for (const c of conns.values()) if (!c.name) n++; return n; };
-function broadcast(m) { for (const c of conns.values()) if (c.conn.open) { try { c.conn.send(m); } catch (e) {} } }
+const T = s => TOPIC + code + '/' + s;
+function pub(topic, obj, retain) { if (mq && mq.connected) mq.publish(topic, obj === null ? '' : JSON.stringify(obj), { qos: 0, retain: !!retain }); }
+function broadcast(m) { pub(T('down'), m); }
+const parse = buf => { try { const s = new TextDecoder().decode(buf); return s ? JSON.parse(s) : null; } catch (e) { return undefined; } };
+
+// 중계 서버에 붙는다. 첫 서버가 안 되면 다음 서버로 (방장만 고른다; 참가자는 링크에 적힌 서버로 간다)
+function connectBroker(idx, opts, onUp, onFail) {
+  let settled = false;
+  const c = mqtt.connect(BROKERS[idx], Object.assign({ clientId: 'mp_' + rid(), keepalive: 20, reconnectPeriod: 2000, connectTimeout: 8000, clean: true }, opts));
+  const fail = () => { if (settled) return; settled = true; try { c.end(true); } catch (e) {} onFail(); };
+  const timer = setTimeout(fail, 9000);
+  c.on('connect', () => { if (settled) return; settled = true; clearTimeout(timer); onUp(c); });
+  c.on('error', () => { if (!settled) { clearTimeout(timer); fail(); } });
+  return c;
+}
 
 function rebuild() {
   if (!isHost) return;
@@ -321,60 +340,70 @@ function validRoster(d) {
 }
 
 // 방장: 방 만들기
-function hostRoom() {
+function hostRoom(idx) {
+  idx = idx || 0;
   const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; code = ''; for (let i = 0; i < 4; i++) code += A[Math.random() * A.length | 0];
   $('#createBtn').disabled = true; $('#connNote').className = 'note'; $('#connNote').textContent = '방을 만드는 중이에요…';
-  peer = new Peer(PREFIX + code);
-  peer.on('open', () => { isHost = true; showGame(); rebuild(); });
-  peer.on('connection', c => {
-    c.on('open', () => {
-      if (conns.size >= MAX) { c.close(); return; }
-      conns.set(c.peer, { conn: c, name: '' });
-      try { c.send({ t: 'hello', you: c.peer }); } catch (e) {}
-      rebuild();
-    });
-    c.on('data', m => {
-      if (!m || m.t !== 'name') return;
-      const n = clean(m.name), e = conns.get(c.peer);
-      if (n && e) { e.name = n; rebuild(); }
-    });
-    c.on('close', () => { if (conns.delete(c.peer)) rebuild(); });
-  });
-  peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) {} });
-  peer.on('error', e => {
-    if (!isHost) {
-      try { peer.destroy(); } catch (x) {}
-      if (e.type === 'unavailable-id') { hostRoom(); return; }
-      $('#createBtn').disabled = false; $('#connNote').className = 'warn'; $('#connNote').textContent = '방을 만들지 못했어요. 인터넷 연결을 확인하고 다시 눌러 주세요.';
-    } else if (e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error') toast('연결이 불안정해요. 다시 붙는 중이에요');
+  mq = connectBroker(idx, { will: { topic: T('host'), payload: '', qos: 0, retain: true } }, c => {
+    broker = idx; isHost = true; hosting = true;
+    c.subscribe(T('up'));
+    pub(T('host'), { on: 1, at: Date.now() }, true);
+    c.on('connect', () => { c.subscribe(T('up')); pub(T('host'), { on: 1, at: Date.now() }, true); sendRoster(); });   // 다시 붙었을 때
+    c.on('message', (topic, buf) => { if (topic === T('up')) onGuestMsg(parse(buf)); });
+    showGame(); rebuild();
+  }, () => {
+    if (idx + 1 < BROKERS.length) { hostRoom(idx + 1); return; }
+    $('#createBtn').disabled = false; $('#connNote').className = 'warn'; $('#connNote').textContent = '방을 만들지 못했어요. 인터넷 연결을 확인하고 다시 눌러 주세요.';
   });
 }
+function onGuestMsg(m) {
+  if (!m || typeof m !== 'object' || typeof m.id !== 'string' || !/^[a-z0-9]{6,20}$/.test(m.id)) return;
+  const now = Date.now(); let c = conns.get(m.id);
+  if (m.t === 'bye') { if (conns.delete(m.id)) rebuild(); return; }
+  if (!c) {
+    if (conns.size >= MAX) return;
+    c = { name: '', seen: now }; conns.set(m.id, c);
+    if (m.t !== 'name') rebuild();
+  }
+  c.seen = now;
+  if (m.t === 'name') { const n = clean(m.name); if (n && n !== c.name) { c.name = n; rebuild(); } }
+  else if (m.t === 'hello') sendRoster();
+}
+// 말없이 사라진 참가자(창을 닫음 등)를 정리한다
+setInterval(() => {
+  if (!isHost) return;
+  const now = Date.now(); let gone = false;
+  for (const [id, c] of conns) if (now - c.seen > 12000) { conns.delete(id); gone = true; }
+  if (gone) rebuild();
+}, 3000);
 
 // 참가자: 링크로 들어오기
 function joinRoom() {
-  code = inviteCode;
+  code = inviteCode; myPeer = rid();
+  broker = Math.max(0, Math.min(BROKERS.length - 1, parseInt(qs.get('b') || '0', 10) || 0));
   $('#connNote').className = 'note'; $('#connNote').textContent = '방에 연결하는 중이에요…';
-  peer = new Peer();
-  peer.on('open', id => {
-    myPeer = id;
-    conn = peer.connect(PREFIX + code, { reliable: true });
-    conn.on('open', () => { hostOn = true; $('#joinBtn').disabled = false; $('#connNote').textContent = '연결됐어요. 이름을 적고 입장해 주세요.'; });
-    conn.on('data', onHostData);
-    conn.on('close', hostLeft);
-  });
-  peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) {} });
-  peer.on('error', e => {
-    if (hostOn) { if (e.type === 'peer-unavailable') hostLeft(); return; }
-    $('#connNote').className = 'warn';
-    $('#connNote').textContent = e.type === 'peer-unavailable' ? '방을 찾을 수 없어요. 방장이 방을 닫았거나 링크가 잘못됐어요.' : '연결하지 못했어요. 새로고침해 주세요.';
-  });
+  let found = false;
+  mq = connectBroker(broker, { will: { topic: T('up'), payload: JSON.stringify({ t: 'bye', id: myPeer }), qos: 0, retain: false } }, c => {
+    c.on('message', (topic, buf) => {
+      const m = parse(buf);
+      if (topic === T('host')) {
+        if (m && m.on) { found = true; if (!hostOn) { hostOn = true; $('#joinBtn').disabled = false; $('#connNote').className = 'note'; $('#connNote').textContent = '연결됐어요. 이름을 적고 입장해 주세요.'; pub(T('up'), myName && !$('#app').hidden ? { t: 'name', id: myPeer, name: myName } : { t: 'hello', id: myPeer }); } }
+        else if (hostOn) hostLeft();
+      } else if (topic === T('down')) onHostData(m);
+    });
+    c.subscribe([T('host'), T('down')]);
+    c.on('connect', () => { c.subscribe([T('host'), T('down')]); if (hostOn) pub(T('up'), myName && !$('#app').hidden ? { t: 'name', id: myPeer, name: myName } : { t: 'hello', id: myPeer }); });
+    setTimeout(() => { if (!found) { $('#connNote').className = 'warn'; $('#connNote').textContent = '방을 찾을 수 없어요. 방장이 방을 닫았거나 링크가 잘못됐어요. 방장에게 새 링크를 받아 주세요.'; } }, 6000);
+  }, () => { $('#connNote').className = 'warn'; $('#connNote').textContent = '중계 서버에 연결하지 못했어요. 인터넷 연결을 확인하고 새로고침해 주세요.'; });
+  // 살아 있다는 신호 — 방장이 12초 넘게 소식이 없는 참가자를 정리한다
+  setInterval(() => { if (hostOn) pub(T('up'), $('#app').hidden ? { t: 'hello', id: myPeer } : { t: 'name', id: myPeer, name: myName }); }, 4000);
 }
 let lastHostMsg = 0;
 function onHostData(m) {
   if (!m || typeof m !== 'object') return;
   lastHostMsg = performance.now();
-  if (m.t === 'hello' && typeof m.you === 'string') myPeer = m.you;
-  else if (m.t === 'roster') { const d = validRoster(m.d); if (d) applyRoster(d); }
+  if (!hostOn) { hostOn = true; $('#joinBtn').disabled = false; }
+  if (m.t === 'roster') { const d = validRoster(m.d); if (d) applyRoster(d); }
   else if (m.t === 'frame') {
     const d = m.d; if (!d || typeof d.t !== 'number' || !Array.isArray(d.b)) return;
     const b = new Map();
@@ -397,9 +426,16 @@ function showGame() {
   renderPanel(); resize();
 }
 function leave() {
-  try { if (peer) peer.destroy(); } catch (e) {}
+  try {
+    if (mq) {
+      if (isHost) pub(T('host'), null, true); else pub(T('up'), { t: 'bye', id: myPeer });
+      mq.end(false, {}, () => { location.href = baseUrl(); });
+      setTimeout(() => { location.href = baseUrl(); }, 800); return;
+    }
+  } catch (e) {}
   location.href = baseUrl();
 }
+addEventListener('pagehide', () => { try { if (mq && isHost) pub(T('host'), null, true); else if (mq) pub(T('up'), { t: 'bye', id: myPeer }); } catch (e) {} });
 
 // ---------- 조작판 ----------
 function myBallId() {
@@ -479,7 +515,7 @@ $('#list').addEventListener('click', e => {
 $('#saveName').addEventListener('click', () => {
   const n = clean($('#myName').value); if (!n) { toast('이름을 적어 주세요'); return; }
   myName = n; $('#myName').value = n; try { localStorage.setItem('pin-name', n); } catch (e) {}
-  if (isHost) rebuild(); else if (conn && conn.open) conn.send({ t: 'name', name: n });
+  if (isHost) rebuild(); else pub(T('up'), { t: 'name', id: myPeer, name: n });
   toast('이름을 바꿨어요');
 });
 $('#myName').addEventListener('keydown', e => { if (e.key === 'Enter') $('#saveName').click(); });
@@ -494,15 +530,15 @@ try { nameIn.value = localStorage.getItem('pin-name') || ''; } catch (e) {}
 function needName() { const n = clean(nameIn.value); if (!n) { nameIn.focus(); toast('먼저 이름을 적어 주세요'); return null; } myName = n; try { localStorage.setItem('pin-name', n); } catch (e) {} return n; }
 $('#createBtn').addEventListener('click', () => { if (needName()) hostRoom(); });
 $('#joinBtn').addEventListener('click', () => {
-  if (!needName() || !conn || !conn.open) return;
-  conn.send({ t: 'name', name: myName }); showGame();
+  if (!needName() || !hostOn) return;
+  pub(T('up'), { t: 'name', id: myPeer, name: myName }); showGame();
 });
 nameIn.addEventListener('keydown', e => { if (e.key === 'Enter') (isInvite ? $('#joinBtn') : $('#createBtn')).click(); });
 if (isInvite) {
   $('#lobbyLead').textContent = inviteCode + ' 방에 초대받았어요. 이름을 적고 입장해 주세요.';
   $('#createBtn').hidden = true; $('#joinBtn').hidden = false;
 }
-if (!window.Peer) { $('#createBtn').disabled = true; $('#connNote').className = 'warn'; $('#connNote').textContent = '연결 도구를 불러오지 못했어요. 인터넷 연결을 확인하고 새로고침해 주세요.'; }
+if (!window.mqtt) { $('#createBtn').disabled = true; $('#connNote').className = 'warn'; $('#connNote').textContent = '연결 도구를 불러오지 못했어요. 인터넷 연결을 확인하고 새로고침해 주세요.'; }
 else if (isInvite) joinRoom();
 
 // ---------- 그리기 ----------
@@ -593,9 +629,9 @@ function loop(now) {
       acc += dt; let n = 0;
       while (acc >= 1 / 120 && n < 8) { step(1 / 120); acc -= 1 / 120; n++; }
       if (n === 8) acc = 0;
-      if (conns.size) {
+      if (hosting) {
         const live = phase === 'run' || phase === 'shuffle';
-        if (now - lastEmit > (live ? 50 : 400)) {
+        if (now - lastEmit > (live ? 90 : 400)) {
           lastEmit = now;
           broadcast({ t: 'frame', d: { t: +simT.toFixed(3), b: balls.filter(b => !b.done).map(b => [b.id, Math.round(b.x), Math.round(b.y), Math.round(b.charge * 9)]), w: newWaves.splice(0) } });
         }
